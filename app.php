@@ -15,7 +15,12 @@ ini_set('session.use_trans_sid', 0);
 ini_set('session.cache_limiter', 'nocache');
 ini_set('session.save_path', $config['sessionSavePath']);
 
-session_start();
+// Each new session is a file, so a client that never keeps its cookie (most bots) only gets so many
+$sessionId = $_COOKIE[session_name()] ?? NULL;
+if ((is_string($sessionId) && preg_match('/^[A-Za-z0-9,-]{1,128}$/', $sessionId) && is_file($config['sessionSavePath'] . '/sess_' . $sessionId)) || allowNewSession($config))
+    session_start();
+else
+    $_SESSION = [];
 
 if (empty($_SESSION['csrf']) || !is_array($_SESSION['csrf'])) {
     $_SESSION['csrf'] = [];
@@ -95,6 +100,14 @@ function clientKey($config)
 {
     $ip = clientIp($config);
     return str_contains($ip, ':') ? bin2hex(substr(inet_pton($ip), 0, 8)) : $ip;
+}
+
+// Up to 100 new sessions per visitor in 10 minutes, enough for many people sharing an address
+function allowNewSession($config)
+{
+    $key = 'ratelimit_' . md5($config['salt'] . clientKey($config) . 'session');
+    apcu_add($key, 0, 600);
+    return apcu_inc($key) <= 100;
 }
 
 function checkRateLimit($config, $data, $key = 'login', $limit = 3, $window = 300)
@@ -1342,10 +1355,11 @@ function handleUpload($config, $db, $data)
 
 function recordThreadView($db, $threadId)
 {
-    $key = "viewed_thread_$threadId";
     // Only count clients that send the session cookie back: one that never does (most bots) would be a new view, and a write, on every request
-    if (!isset($_SESSION[$key]) && isset($_COOKIE[session_name()])) {
-        $_SESSION[$key] = true;
+    if (!isset($_SESSION['viewed'][$threadId]) && session_status() === PHP_SESSION_ACTIVE && ($_COOKIE[session_name()] ?? NULL) === session_id()) {
+        $_SESSION['viewed'][$threadId] = TRUE;
+        if (count($_SESSION['viewed']) > 200) // Only the latest, so a crawler's session doesn't grow with every thread it visits
+            unset($_SESSION['viewed'][array_key_first($_SESSION['viewed'])]);
         $query = $db->prepare('UPDATE threads SET views = views + 1 WHERE id = ?');
         $query->execute([$threadId]);
     }
