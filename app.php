@@ -865,7 +865,7 @@ function getLatestPosts($db, $userId, $perPage = 20)
 {
     $results = [];
     $query = $db->prepare('
-        SELECT t.id, t.title, t.views, t.user_id, u.username, p.ts_updated
+        SELECT t.id, t.title, t.user_id, u.username, p.ts_updated
         FROM posts AS p
         LEFT JOIN threads AS t ON p.thread_id = t.id
         LEFT JOIN users AS u ON t.user_id = u.id
@@ -908,7 +908,7 @@ function getThreads($db, $page = 1, $perPage = 20, $where = NULL, $params = [])
 {
     $results = [];
     // Threads are picked before their posts are counted, as counting first would count every post in the forum
-    $sql = 'SELECT t.id, t.title, t.views, r.last_read_at, t.user_id, u.username, t.last_user_id, lu.username AS last_username, u.email, t.ts_created, t.ts_updated, t.tags,
+    $sql = 'SELECT t.id, t.title, r.last_read_at, t.user_id, u.username, t.last_user_id, lu.username AS last_username, u.email, t.ts_created, t.ts_updated, t.tags,
             (SELECT COUNT(*) FROM posts WHERE thread_id = t.id AND is_approved = 1) AS total_posts
         FROM threads AS t
         LEFT JOIN users AS u ON t.user_id = u.id
@@ -939,7 +939,6 @@ function getThreads($db, $page = 1, $perPage = 20, $where = NULL, $params = [])
             'username' => $row['username'],
             'last_username' => $row['last_username'],
             'last_user_id' => $row['last_user_id'],
-            'views' => formatViews($row['views']),
             'total_posts' => $row['total_posts'] - 1,
             'last_page' => ceil($row['total_posts'] / $perPage),
             'is_unread' => isset($_SESSION['username']) && (!$row['last_read_at'] || $row['last_read_at'] < $row['ts_updated']),
@@ -1016,16 +1015,6 @@ function getPaginationPages(int $currentPage, int $totalPages): array
     }
     $pagesWithGaps[0]['is_first'] = TRUE;
     return $pagesWithGaps;
-}
-
-function formatViews($num)
-{
-    if ($num >= 1000000) {
-        return round($num / 1000000, 1) . 'M';
-    } elseif ($num >= 1000) {
-        return round($num / 1000, 1) . 'k';
-    }
-    return (string) $num;
 }
 
 function timeAgo(int $timestamp): string
@@ -1361,18 +1350,6 @@ function handleUpload($config, $db, $data)
     $query->bindValue(':ts_created', time());
     $query->execute();
     return $subdir . '/' . $filename;
-}
-
-function recordThreadView($db, $threadId)
-{
-    // Only count clients that send the session cookie back: one that never does (most bots) would be a new view, and a write, on every request
-    if (!isset($_SESSION['viewed'][$threadId]) && session_status() === PHP_SESSION_ACTIVE && ($_COOKIE[session_name()] ?? NULL) === session_id()) {
-        $_SESSION['viewed'][$threadId] = TRUE;
-        if (count($_SESSION['viewed']) > 200) // Only the latest, so a crawler's session doesn't grow with every thread it visits
-            unset($_SESSION['viewed'][array_key_first($_SESSION['viewed'])]);
-        $query = $db->prepare('UPDATE threads SET views = views + 1 WHERE id = ?');
-        $query->execute([$threadId]);
-    }
 }
 
 function markThreadAsRead(PDO $db, int $threadId): void
@@ -1844,7 +1821,6 @@ if ($method === 'GET' && preg_match('/^(p[0-9]{1,3})?$/', $uri, $queryString)) {
     $page = (count($queryString) === 4) ? (int) substr($queryString[3], 1) : 1;
     $threadId = (int) $queryString[1];
     $cacheKey = cacheKey('thread/' . $threadId, 'p' . $page);
-    recordThreadView($db, $threadId); // Before the cache, so guests served from it are counted too
     tryRenderFromCache($cacheKey);
     $totalPages = ceil(getTotalPosts($config, $db, $threadId) / $perPage);
     if ($page < 1 || $page > max(1, $totalPages)) // Only real pages, so there's a bounded set of them to cache
